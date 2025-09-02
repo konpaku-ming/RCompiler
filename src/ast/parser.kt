@@ -163,7 +163,6 @@ class Parser(private val tokens: List<Token>) {
             TokenType.LeftParen,
             TokenType.LeftBracket,
             TokenType.LeftBrace,
-            TokenType.CONST,
             TokenType.Not,
             TokenType.SubNegate,
             TokenType.BitAnd,
@@ -190,16 +189,8 @@ class Parser(private val tokens: List<Token>) {
             TokenType.STRUCT,
             TokenType.ENUM,
             TokenType.TRAIT,
+            TokenType.CONST,
             TokenType.IMPL -> true
-
-            TokenType.CONST -> {
-                when (ahead(1).type) {
-                    TokenType.FN -> true
-                    TokenType.IDENTIFIER -> true
-                    TokenType.LeftBrace -> false // 优先解释为Expr而不是ExprStmt
-                    else -> error("unexpected token after const")
-                }
-            }
 
             else -> false
         }
@@ -237,7 +228,6 @@ class Parser(private val tokens: List<Token>) {
             }
 
             TokenType.LeftBrace -> parseBlockExpr(consume())
-            TokenType.CONST -> parseConstBlockExpr(consume())
             TokenType.SubNegate -> parsePrefixNegate(consume())
             TokenType.Not -> parsePrefixNot(consume())
             TokenType.BitAnd -> parsePrefixBorrow(consume())
@@ -296,8 +286,8 @@ class Parser(private val tokens: List<Token>) {
 
             TokenType.Dot -> {
                 consume()
-                val next = peek()
-                val method = parsePathSegment()
+                val next = peek() //token
+                val method = parsePathSegment() //segment
                 if (peek().type == TokenType.LeftParen) {
                     parseMethodCallExpr(left, method)
                 } else {
@@ -320,11 +310,11 @@ class Parser(private val tokens: List<Token>) {
 
 
     fun parsePathSegment(): PathSegment {
-        val identSegment = consume()
-        if (identSegment.type != TokenType.IDENTIFIER &&
-            identSegment.type != TokenType.SELF &&
-            identSegment.type != TokenType.SELF_CAP
+        if (peek().type != TokenType.IDENTIFIER &&
+            peek().type != TokenType.SELF &&
+            peek().type != TokenType.SELF_CAP
         ) error("unexpected token in PathExprSegment")
+        val identSegment = consume()
         return PathSegment(identSegment)
     }
 
@@ -342,8 +332,8 @@ class Parser(private val tokens: List<Token>) {
         val cur = consume()
         return when (cur.type) {
             TokenType.BitAnd -> parseReferenceType(cur)
-            TokenType.LeftBracket -> parseArrayOrSliceType(cur)
-            TokenType.Underscore -> parseInferredType(cur)
+            TokenType.LeftBracket -> parseArrayType(cur)
+            TokenType.LeftParen -> parseUnitType(cur)
             else -> error("unexpected token in TypeNoBounds")
         }
     }
@@ -355,25 +345,19 @@ class Parser(private val tokens: List<Token>) {
         return ReferenceTypeNode(isMut, tar)
     }
 
-    fun parseArrayOrSliceType(cur: Token): TypeNode {
+    fun parseArrayType(cur: Token): TypeNode {
         if (cur.type != TokenType.LeftBracket) error("expected [")
         val elementType = parseType()
-        val next = consume()
-        when (next.type) {
-            TokenType.RightBracket -> return SliceTypeNode(elementType)
-            TokenType.Semicolon -> {
-                val length = parseExpr(0)
-                if (!match(TokenType.RightBracket)) error("expected ]")
-                return ArrayTypeNode(elementType, length)
-            }
-
-            else -> error("expected ] or ;")
-        }
+        if (!match(TokenType.Semicolon)) error("expected ;")
+        val length = parseExpr(0)
+        if (!match(TokenType.RightBracket)) error("expected ]")
+        return ArrayTypeNode(elementType, length)
     }
 
-    fun parseInferredType(cur: Token): InferredTypeNode {
-        if (cur.type != TokenType.Underscore) error("expected _")
-        return InferredTypeNode(cur)
+    fun parseUnitType(cur: Token): TypeNode {
+        if (cur.type != TokenType.LeftParen) error("expected (")
+        if (!match(TokenType.RightParen)) error("expected )")
+        return UnitTypeNode()
     }
 
     fun parseLiteralExpr(cur: Token): LiteralExprNode {
@@ -423,22 +407,18 @@ class Parser(private val tokens: List<Token>) {
                 if (match(TokenType.Semicolon)) {
                     statements.add(ExprStmtNode(expr, true))
                 } else {
-                    if (expr is ExprWithBlockNode)
+                    if (expr is ExprWithBlockNode) {
                         statements.add(ExprStmtNode(expr, false))
-                    else error("unexpected block in BlockExpr")
-                    expression = expr
+                    } else {
+                        expression = expr
+                        if (peek().type != TokenType.RightBrace)
+                            error("expr must be the last in block")
+                    }
                 }
             }
         }
         return BlockExprNode(statements, expression)
     }
-
-    fun parseConstBlockExpr(cur: Token): ConstBlockExprNode {
-        if (cur.type != TokenType.CONST) error("expected const")
-        val block = parseBlockExpr(consume())
-        return ConstBlockExprNode(block)
-    }
-
 
     fun parsePrefixNegate(cur: Token): NegationExprNode {
         // - as prefix
@@ -698,22 +678,22 @@ class Parser(private val tokens: List<Token>) {
         if (cur.type != TokenType.LeftBracket) error("expected [")
         val element = mutableListOf<ExprNode>()
         if (match(TokenType.RightBracket)) {
+            // []
             return ArrayListExprNode(element)
         }
         val first = parseExpr(0)
         element.add(first)
         if (match(TokenType.RightBracket)) {
+            // [expr]
             return ArrayListExprNode(element)
         }
         if (match(TokenType.Comma)) {
-            if (match(TokenType.RightBracket))
-                return ArrayListExprNode(element)
+            if (match(TokenType.RightBracket)) return ArrayListExprNode(element)
             else element.add(parseExpr(0))
             while (match(TokenType.Comma)) {
                 if (peek().type == TokenType.RightBracket) {
                     break
-                }
-                element.add(parseExpr(0))
+                } else element.add(parseExpr(0))
             }
             if (!match(TokenType.RightBracket)) error("expected ]")
             return ArrayListExprNode(element)
@@ -736,24 +716,24 @@ class Parser(private val tokens: List<Token>) {
     fun parseStructExpr(path: PathExprNode): StructExprNode {
         if (!match(TokenType.LeftBrace)) error("expected {")
         val fields = mutableListOf<StructExprField>()
-        if (match(TokenType.RightBrace)) return StructExprNode(path, fields)
+        if (match(TokenType.RightBrace)) return StructExprNode(path, emptyList())
         else fields.add(parseStructExprField())
         while (match(TokenType.Comma)) {
             if (peek().type == TokenType.RightBrace) {
                 break
-            }
-            fields.add(parseStructExprField())
+            } else fields.add(parseStructExprField())
         }
         if (!match(TokenType.RightBrace)) error("expected }")
         return StructExprNode(path, fields)
     }
 
     fun parseStructExprField(): StructExprField {
+        if (peek().type != TokenType.IDENTIFIER) error("expected identifier")
         val name = consume()
-        if (name.type != TokenType.IDENTIFIER) error("expected identifier")
-        var expr: ExprNode? = null
-        if (match(TokenType.Colon)) {
-            expr = parseExpr(0)
+        val expr = if (match(TokenType.Colon)) {
+            parseExpr(0)
+        } else {
+            null
         }
         return StructExprField(name, expr)
     }
@@ -761,13 +741,12 @@ class Parser(private val tokens: List<Token>) {
     fun parseCallExpr(expr: ExprNode, cur: Token): CallExprNode {
         if (cur.type != TokenType.LeftParen) error("expected (")
         val params = mutableListOf<ExprNode>()
-        if (match(TokenType.RightParen)) return CallExprNode(expr, params)
+        if (match(TokenType.RightParen)) return CallExprNode(expr, emptyList())
         else params.add(parseExpr(0))
         while (match(TokenType.Comma)) {
             if (peek().type == TokenType.RightParen) {
                 break
-            }
-            params.add(parseExpr(0))
+            } else params.add(parseExpr(0))
         }
         if (!match(TokenType.RightParen)) error("expected )")
         return CallExprNode(expr, params)
@@ -779,20 +758,22 @@ class Parser(private val tokens: List<Token>) {
     ): MethodCallExprNode {
         if (!match(TokenType.LeftParen)) error("expected (")
         val params = mutableListOf<ExprNode>()
-        if (match(TokenType.RightParen)) return MethodCallExprNode(expr, method, params)
-        else params.add(parseExpr(0))
-        while (match(TokenType.Comma)) {
-            if (peek().type == TokenType.RightParen) {
-                break
-            }
+        if (match(TokenType.RightParen)) {
+            return MethodCallExprNode(expr, method, emptyList())
+        } else {
             params.add(parseExpr(0))
+            while (match(TokenType.Comma)) {
+                if (peek().type == TokenType.RightParen) {
+                    break
+                } else params.add(parseExpr(0))
+            }
+            if (!match(TokenType.RightParen)) error("expected )")
+            return MethodCallExprNode(expr, method, params)
         }
-        if (!match(TokenType.RightParen)) error("expected )")
-        return MethodCallExprNode(expr, method, params)
     }
 
     fun parseFieldExpr(expr: ExprNode, id: Token): FieldExprNode {
-        if (id.type != TokenType.IDENTIFIER) error("expected identifier")
+        if (id.type != TokenType.IDENTIFIER) error("expected id")
         return FieldExprNode(expr, id)
     }
 
@@ -824,17 +805,16 @@ class Parser(private val tokens: List<Token>) {
     }
 
     fun parseLiteralPattern(): LiteralPatternNode {
-        val negate = match(TokenType.SubNegate)
-        val cur = consume()
-        val expr = parseLiteralExpr(cur)
-        return LiteralPatternNode(expr, negate)
+        val isNeg = match(TokenType.SubNegate)
+        val expr = parseLiteralExpr(consume())
+        return LiteralPatternNode(expr, isNeg)
     }
 
     fun parseIdentifierPattern(): IdentifierPatternNode {
         val isRef = match(TokenType.REF)
         val isMut = match(TokenType.MUT)
+        if (peek().type != TokenType.IDENTIFIER) error("expected identifier")
         val name = consume()
-        if (name.type != TokenType.IDENTIFIER) error("expected identifier")
         if (match(TokenType.At)) {
             val pattern = parsePattern()
             return IdentifierPatternNode(name, isRef, isMut, pattern)
@@ -842,20 +822,20 @@ class Parser(private val tokens: List<Token>) {
     }
 
     fun parseWildcardPattern(): WildcardPatternNode {
-        val underscore = consume()
-        if (underscore.type != TokenType.Underscore) error("expected _")
-        return WildcardPatternNode(underscore)
+        if (!match(TokenType.Underscore)) error("expected _")
+        return WildcardPatternNode()
     }
 
     fun parseReferencePattern(): ReferencePatternNode {
         val ref = consume()
-        if (ref.type != TokenType.And && ref.type != TokenType.BitAnd)
-            error("expected & or &&")
+        if (ref.type != TokenType.And && ref.type != TokenType.BitAnd) error("expected & or &&")
         val isMut = match(TokenType.MUT)
         val pattern = parsePattern()
-        return if (ref.type == TokenType.BitAnd)
+        return if (ref.type == TokenType.BitAnd) {
             ReferencePatternNode(isMut, pattern)
-        else ReferencePatternNode(false, ReferencePatternNode(isMut, pattern))
+        } else {
+            ReferencePatternNode(false, ReferencePatternNode(isMut, pattern))
+        }
     }
 
     fun parsePathPattern(): PathPatternNode {
@@ -864,46 +844,13 @@ class Parser(private val tokens: List<Token>) {
     }
 
     fun parseCondition(): Condition {
-        return if (peek().type == TokenType.LET) {
-            parseLetChain()
-        } else {
-            val expr = parseExpr(0)
-            if (expr is StructExprNode) {
-                error("Excluded expression type in condition")
-            }
-            Expression(expr)
+        if (!match(TokenType.LeftParen)) error("expected (")
+        val expr = parseExpr(0)
+        if (expr is StructExprNode) {
+            error("Excluded expression type in condition")
         }
-    }
-
-    fun parseLetChain(): LetChain {
-        val chain = mutableListOf<LetChainCondition>()
-        chain.add(parseLetChainCondition())
-        while (match(TokenType.And)) {
-            chain.add(parseLetChainCondition())
-        }
-        return LetChain(chain)
-    }
-
-    fun parseLetChainCondition(): LetChainCondition {
-        return if (match(TokenType.LET)) {
-            val pattern = parsePattern()
-            if (!match(TokenType.Eq)) error("expected =")
-            val expr = parseExpr(0)
-            if (expr is StructExprNode || expr is LazyBooleanExprNode ||
-                expr is AssignExprNode || expr is CompoundAssignExprNode
-            ) {
-                error("expr : excluded conditions")
-            }
-            LetChainCondition(pattern, expr)
-        } else {
-            val expr = parseExpr(0)
-            if (expr is StructExprNode || expr is LazyBooleanExprNode ||
-                expr is AssignExprNode || expr is CompoundAssignExprNode
-            ) {
-                error("expr : excluded conditions")
-            }
-            LetChainCondition(null, expr)
-        }
+        if (!match(TokenType.RightParen)) error("expected )")
+        return Condition(expr)
     }
 
     fun parseIfExpr(cur: Token): IfExprNode {
@@ -932,13 +879,13 @@ class Parser(private val tokens: List<Token>) {
     }
 
     fun parseInfiniteLoopExpr(cur: Token): InfiniteLoopExprNode {
-        if (cur.type == TokenType.LOOP) error("expected loop")
+        if (cur.type != TokenType.LOOP) error("expected loop")
         val block = parseBlockExpr(consume())
         return InfiniteLoopExprNode(block)
     }
 
     fun parsePredicateLoopExpr(cur: Token): PredicateLoopExprNode {
-        if (cur.type == TokenType.WHILE) error("expected while")
+        if (cur.type != TokenType.WHILE) error("expected while")
         val condition = parseCondition()
         val block = parseBlockExpr(consume())
         return PredicateLoopExprNode(condition, block)
@@ -954,7 +901,7 @@ class Parser(private val tokens: List<Token>) {
 
     fun parseContinueExpr(cur: Token): ContinueExprNode {
         if (cur.type != TokenType.CONTINUE) error("expected continue")
-        return ContinueExprNode(cur)
+        return ContinueExprNode()
     }
 
     fun parseReturnExpr(cur: Token): ReturnExprNode {
@@ -967,7 +914,7 @@ class Parser(private val tokens: List<Token>) {
 
     fun parseUnderscoreExpr(cur: Token): UnderscoreExprNode {
         if (cur.type != TokenType.Underscore) error("expected _")
-        return UnderscoreExprNode(cur)
+        return UnderscoreExprNode()
     }
 
     fun parseStmt(): StmtNode {
@@ -981,12 +928,6 @@ class Parser(private val tokens: List<Token>) {
                 when (ahead(1).type) {
                     TokenType.FN -> parseItemStmt()
                     TokenType.IDENTIFIER -> parseItemStmt()
-                    TokenType.LeftBrace -> {
-                        val expr = parseConstBlockExpr(consume())
-                        val hasSemicolon = match(TokenType.Semicolon)
-                        ExprStmtNode(expr, hasSemicolon)
-                    }
-
                     else -> error("unexpected token after const")
                 }
             }
@@ -1010,14 +951,14 @@ class Parser(private val tokens: List<Token>) {
     fun parseLetStmt(cur: Token): LetStmtNode {
         if (cur.type != TokenType.LET) error("expected let")
         val pattern = parsePattern()
-        val valueType = if (match(TokenType.Colon)) {
-            parseType()
-        } else null
+        if (!match(TokenType.Colon)) error("expected :")
+        val valueType = parseType()
         val value = if (match(TokenType.Assign)) {
             parseExpr(0)
-        } else null
+        } else {
+            null
+        }
         if (!match(TokenType.Semicolon)) error("expected ;")
-
         return LetStmtNode(pattern, valueType, value)
     }
 
@@ -1041,8 +982,8 @@ class Parser(private val tokens: List<Token>) {
     fun parseFunctionItem(): FunctionItemNode {
         val isConst = match(TokenType.CONST)
         if (!match(TokenType.FN)) error("expected fn")
+        if (peek().type != TokenType.IDENTIFIER) error("expected id")
         val fnName = consume()
-        if (fnName.type != TokenType.IDENTIFIER) error("expected id")
         if (!match(TokenType.LeftParen)) error("expected (")
         val (selfParam, params) = parseFunctionParameters()
         if (!match(TokenType.RightParen)) error("expected )")
@@ -1085,7 +1026,7 @@ class Parser(private val tokens: List<Token>) {
                     params.add(parseFunctionParam())
                     while (match(TokenType.Comma)) {
                         if (peek().type == TokenType.RightParen) break
-                        params.add(parseFunctionParam())
+                        else params.add(parseFunctionParam())
                     }
                     return selfParam to params
                 }
@@ -1107,8 +1048,8 @@ class Parser(private val tokens: List<Token>) {
     fun parseSelfParam(): SelfParam {
         val isRef = match(TokenType.BitAnd)
         val isMut = match(TokenType.MUT)
-        var selfType: TypeNode? = null
         if (!match(TokenType.SELF)) error("expected self")
+        var selfType: TypeNode? = null
         if (match(TokenType.Colon)) {
             if (isRef) error("unexpected :")
             selfType = parseType()
@@ -1144,14 +1085,15 @@ class Parser(private val tokens: List<Token>) {
         fields.add(parseStructField())
         while (match(TokenType.Comma)) {
             if (peek().type == TokenType.RightBrace) break
-            fields.add(parseStructField())
+            else fields.add(parseStructField())
         }
+        if (peek().type != TokenType.RightBrace) error("expected {")
         return fields
     }
 
     fun parseStructField(): StructField {
+        if (peek().type != TokenType.IDENTIFIER) error("expected id")
         val name = consume()
-        if (consume().type != TokenType.IDENTIFIER) error("expected id")
         if (!match(TokenType.Colon)) error("expected :")
         val type = parseType()
         return StructField(name, type)
@@ -1159,8 +1101,8 @@ class Parser(private val tokens: List<Token>) {
 
     fun parseEnumItem(): EnumItemNode {
         if (!match(TokenType.ENUM)) error("expected enum")
+        if (peek().type != TokenType.IDENTIFIER) error("expected id")
         val name = consume()
-        if (name.type != TokenType.IDENTIFIER) error("expected id")
         if (!match(TokenType.LeftBrace)) error("expected {")
         val variants = parseVariants()
         if (!match(TokenType.RightBrace)) error("expected }")
@@ -1173,8 +1115,10 @@ class Parser(private val tokens: List<Token>) {
         variants.add(consume())
         while (match(TokenType.Comma)) {
             if (peek().type == TokenType.RightBrace) break
-            if (peek().type != TokenType.IDENTIFIER) error("expected id")
-            variants.add(consume())
+            else {
+                if (peek().type != TokenType.IDENTIFIER) error("expected id")
+                else variants.add(consume())
+            }
         }
         return variants
     }
@@ -1209,8 +1153,12 @@ class Parser(private val tokens: List<Token>) {
 
     fun parseAssociatedItem(): ItemNode {
         return when (peek().type) {
-            TokenType.CONST -> parseConstantItem()
             TokenType.FN -> parseFunctionItem()
+            TokenType.CONST -> {
+                if (ahead(1).type == TokenType.FN) parseFunctionItem()
+                else parseConstantItem()
+            }
+
             else -> error("expected associated const or fn")
         }
     }
@@ -1220,9 +1168,9 @@ class Parser(private val tokens: List<Token>) {
         val implName = if (peek().type == TokenType.IDENTIFIER &&
             ahead(1).type == TokenType.FOR
         ) {
-            val trait = consume()
+            val implName = consume()
             if (!match(TokenType.FOR)) error("expected for")
-            trait
+            implName
         } else null
         val implType = parseType()
         val items = mutableListOf<ItemNode>()

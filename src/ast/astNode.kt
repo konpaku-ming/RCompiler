@@ -4,19 +4,18 @@ enum class NodeType {
     Crate,
     FunctionItem, StructItem, EnumItem, ConstantItem, TraitItem, ImplItem,
     EmptyStmt, ItemStmt, LetStmt, ExprStmt,
-    PathInExpr, TypePath,
-    ReferenceType, ArrayType, SliceType, InferredType,
+    PathInExpr,
+    TypePath, ReferenceType, ArrayType, UnitType,
     IntLiteralExpr, CharLiteralExpr, StringLiteralExpr, BooleanLiteralExpr,
     CStringLiteralExpr, RawStringLiteralExpr, RawCStringLiteralExpr,
-    GroupedExpr, BlockExpr, ConstBlockExpr, BorrowExpr, DerefExpr,
+    GroupedExpr, BlockExpr, BorrowExpr, DerefExpr,
     NegationExpr, BinaryExpr, ComparisonExpr, LazyBooleanExpr, TypeCastExpr,
     AssignExpr, CompoundAssignExpr,
     ArrayList, ArrayLength, IndexExpr,
     StructExpr, CallExpr, MethodCallExpr, FieldExpr,
     InfiniteLoopExpr, PredicateLoopExpr, BreakExpr, ContinueExpr, IfExpr,
     ReturnExpr, UnderscoreExpr,
-    LiteralPattern, IdentifierPattern, WildcardPattern,
-    ReferencePattern, PathPattern,
+    LiteralPattern, IdentifierPattern, WildcardPattern, ReferencePattern, PathPattern,
 }
 
 sealed class ASTNode {
@@ -114,7 +113,7 @@ data class ItemStmtNode(
 
 data class LetStmtNode(
     val pattern: PatternNode,
-    val valueType: TypeNode?,
+    val valueType: TypeNode,
     val value: ExprNode?
 ) : StmtNode() {
     override val type: NodeType = NodeType.LetStmt
@@ -126,7 +125,6 @@ data class ExprStmtNode(
 ) : StmtNode() {
     override val type: NodeType = NodeType.ExprStmt
 }
-
 
 sealed class ExprNode : ASTNode()
 sealed class ExprWithoutBlockNode : ExprNode()
@@ -164,14 +162,8 @@ data class ArrayTypeNode(
     override val type: NodeType = NodeType.ArrayType
 }
 
-data class SliceTypeNode(
-    val elementType: TypeNode
-) : TypeNode() {
-    override val type: NodeType = NodeType.SliceType
-}
-
-data class InferredTypeNode(val token: Token) : TypeNode() {
-    override val type: NodeType = NodeType.InferredType
+class UnitTypeNode() : TypeNode() {
+    override val type: NodeType = NodeType.UnitType
 }
 
 sealed class LiteralExprNode() : ExprWithoutBlockNode()
@@ -222,15 +214,9 @@ sealed class PathExprNode : ExprWithoutBlockNode()
 
 data class BlockExprNode(
     val statements: List<StmtNode>, //may be empty
-    val tailExpr: ExprNode?
+    val expr: ExprNode?
 ) : ExprWithBlockNode() {
     override val type: NodeType = NodeType.BlockExpr
-}
-
-data class ConstBlockExprNode(
-    val block: BlockExprNode,
-) : ExprWithBlockNode() {
-    override val type: NodeType = NodeType.ConstBlockExpr
 }
 
 sealed class OperatorExprNode : ExprWithoutBlockNode()
@@ -362,20 +348,7 @@ data class FieldExprNode(
     override val type: NodeType = NodeType.FieldExpr
 }
 
-sealed class Condition
-
-data class Expression(
-    val expr: ExprNode
-) : Condition()
-
-data class LetChain(
-    val chain: List<LetChainCondition>
-) : Condition()
-
-data class LetChainCondition(
-    val pattern: PatternNode?,
-    val expr: ExprNode
-)
+data class Condition(val expr: ExprNode)
 
 enum class ElseType {
     NULL, BLOCK, IF
@@ -409,7 +382,7 @@ data class BreakExprNode(val value: ExprNode?) : ExprWithoutBlockNode() {
     override val type: NodeType = NodeType.BreakExpr
 }
 
-data class ContinueExprNode(val token: Token) : ExprWithoutBlockNode() {
+class ContinueExprNode() : ExprWithoutBlockNode() {
     override val type: NodeType = NodeType.ContinueExpr
 }
 
@@ -417,7 +390,7 @@ data class ReturnExprNode(val value: ExprNode?) : ExprWithoutBlockNode() {
     override val type: NodeType = NodeType.ReturnExpr
 }
 
-data class UnderscoreExprNode(val token: Token) : ExprWithoutBlockNode() {
+class UnderscoreExprNode() : ExprWithoutBlockNode() {
     override val type: NodeType = NodeType.UnderscoreExpr
 }
 
@@ -425,7 +398,7 @@ sealed class PatternNode : ASTNode()
 
 data class LiteralPatternNode(
     val expr: LiteralExprNode,
-    val negate: Boolean
+    val isNeg: Boolean
 ) : PatternNode() {
     override val type: NodeType = NodeType.LiteralPattern
 }
@@ -439,7 +412,7 @@ data class IdentifierPatternNode(
     override val type: NodeType = NodeType.IdentifierPattern
 }
 
-data class WildcardPatternNode(val token: Token) : PatternNode() {
+class WildcardPatternNode() : PatternNode() {
     override val type: NodeType = NodeType.WildcardPattern
 }
 
