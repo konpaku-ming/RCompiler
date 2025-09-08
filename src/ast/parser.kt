@@ -299,13 +299,13 @@ class Parser(private val tokens: List<Token>) {
         }
     }
 
-    fun parsePathInExpr(): PathInExprNode {
+    fun parsePathExpr(): PathExprNode {
         val path = mutableListOf<PathSegment>()
         path.add(parsePathSegment())
         while (match(TokenType.DoubleColon)) {
             path.add(parsePathSegment())
         }
-        return PathInExprNode(path)
+        return PathExprNode(path)
     }
 
 
@@ -388,10 +388,6 @@ class Parser(private val tokens: List<Token>) {
 
             else -> error("unexpected token")
         }
-    }
-
-    fun parsePathExpr(): PathExprNode {
-        return parsePathInExpr()
     }
 
     fun parseBlockExpr(cur: Token): BlockExprNode {
@@ -794,9 +790,8 @@ class Parser(private val tokens: List<Token>) {
             TokenType.SELF_CAP -> parsePathPattern()
             TokenType.IDENTIFIER -> {
                 when (ahead(1).type) {
-                    TokenType.At -> parseIdentifierPattern()
                     TokenType.DoubleColon -> parsePathPattern()
-                    else -> parsePathPattern()
+                    else -> parseIdentifierPattern()
                 }
             }
 
@@ -815,10 +810,7 @@ class Parser(private val tokens: List<Token>) {
         val isMut = match(TokenType.MUT)
         if (peek().type != TokenType.IDENTIFIER) error("expected identifier")
         val name = consume()
-        if (match(TokenType.At)) {
-            val pattern = parsePattern()
-            return IdentifierPatternNode(name, isRef, isMut, pattern)
-        } else return IdentifierPatternNode(name, isRef, isMut, null)
+        return IdentifierPatternNode(name, isRef, isMut)
     }
 
     fun parseWildcardPattern(): WildcardPatternNode {
@@ -839,7 +831,7 @@ class Parser(private val tokens: List<Token>) {
     }
 
     fun parsePathPattern(): PathPatternNode {
-        val path = parsePathInExpr()
+        val path = parsePathExpr()
         return PathPatternNode(path)
     }
 
@@ -1058,11 +1050,16 @@ class Parser(private val tokens: List<Token>) {
     }
 
     fun parseFunctionParam(): FunctionParam {
-        val paramName = consume()
-        if (paramName.type != TokenType.IDENTIFIER) error("expected id")
+        val paramPattern = parsePattern()
+        if (paramPattern is LiteralPatternNode ||
+            paramPattern is PathPatternNode ||
+            paramPattern is ReferencePatternNode
+        ) {
+            error("improper pattern in function")
+        }
         if (!match(TokenType.Colon)) error("expected :")
         val type = parseType()
-        return FunctionParam(paramName, type)
+        return FunctionParam(paramPattern, type)
     }
 
     fun parseStructItem(): StructItemNode {
