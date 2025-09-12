@@ -70,7 +70,7 @@ enum class TokenType {
     Eq, Neq, Lt,
     Gt, Le, Ge,
 
-    Not, BitNot,
+    Not,
 
     Ellipsis,
     RangeInclusive,
@@ -167,7 +167,6 @@ val tokenPatterns: List<Pair<Regex, TokenType>> = listOf(
     Regex("""^%""") to TokenType.Mod,
     Regex("""^\^""") to TokenType.BitXor,
     Regex("""^!""") to TokenType.Not,
-    Regex("""^~""") to TokenType.BitNot,
     Regex("""^&""") to TokenType.BitAnd,
     Regex("""^\|""") to TokenType.BitOr,
     Regex("""^<""") to TokenType.Lt,

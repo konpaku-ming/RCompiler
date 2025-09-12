@@ -33,7 +33,7 @@ interface ASTVisitor {
     fun visitRawStringLiteralExpr(node: RawStringLiteralExprNode)
     fun visitRawCStringLiteralExpr(node: RawCStringLiteralExprNode)
     fun visitPathExpr(node: PathExprNode)
-    fun visitBlockExpr(node: BlockExprNode)
+    fun visitBlockExpr(node: BlockExprNode, createScope: Boolean)
     fun visitBorrowExpr(node: BorrowExprNode)
     fun visitDerefExpr(node: DerefExprNode)
     fun visitNegationExpr(node: NegationExprNode)

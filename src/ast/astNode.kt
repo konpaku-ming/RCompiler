@@ -160,7 +160,6 @@ data class LetStmtNode(
 
 data class ExprStmtNode(
     val expr: ExprNode,
-    val hasSemicolon: Boolean,
 ) : StmtNode() {
     override val type: NodeType = NodeType.ExprStmt
 
@@ -217,7 +216,10 @@ class UnitTypeNode() : TypeNode() {
 }
 
 // Expr
-sealed class ExprNode : ASTNode()
+sealed class ExprNode : ASTNode() {
+    var resolvedType: ResolvedType = UnknownResolvedType() // expr的类型
+}
+
 sealed class ExprWithoutBlockNode : ExprNode()
 sealed class ExprWithBlockNode : ExprNode()
 
@@ -305,12 +307,12 @@ data class PathExprNode(
 
 data class BlockExprNode(
     val statements: List<StmtNode>, //may be empty
-    val expr: ExprNode?
+    val tailExpr: ExprNode?
 ) : ExprWithBlockNode() {
     override val type: NodeType = NodeType.BlockExpr
 
     override fun accept(visitor: ASTVisitor) {
-        visitor.visitBlockExpr(this)
+        visitor.visitBlockExpr(this, createScope = true) // 默认创建新作用域
     }
 }
 
@@ -363,7 +365,7 @@ data class BinaryExprNode(
 
 data class ComparisonExprNode(
     val left: ExprNode,
-    val op: Token,
+    val operator: Token,
     val right: ExprNode
 ) : OperatorExprNode() {
     override val type: NodeType = NodeType.ComparisonExpr
@@ -375,7 +377,7 @@ data class ComparisonExprNode(
 
 data class LazyBooleanExprNode(
     val left: ExprNode,
-    val op: Token,
+    val operator: Token,
     val right: ExprNode
 ) : OperatorExprNode() {
     override val type: NodeType = NodeType.LazyBooleanExpr
@@ -409,7 +411,7 @@ data class AssignExprNode(
 
 data class CompoundAssignExprNode(
     val left: ExprNode,
-    val op: Token,
+    val operator: Token,
     val right: ExprNode
 ) : OperatorExprNode() {
     override val type: NodeType = NodeType.CompoundAssignExpr
@@ -465,7 +467,7 @@ data class IndexExprNode(
 
 data class StructExprField(
     val name: Token, // must be identifier
-    val expr: ExprNode?,
+    val value: ExprNode,
 )
 
 data class StructExprNode(
@@ -537,6 +539,10 @@ sealed class LoopExprNode : ExprWithBlockNode()
 data class InfiniteLoopExprNode(
     val block: BlockExprNode
 ) : LoopExprNode() {
+    init {
+        resolvedType = BottomResolvedType()
+    }
+
     override val type: NodeType = NodeType.InfiniteLoopExpr
 
     override fun accept(visitor: ASTVisitor) {
@@ -548,6 +554,10 @@ data class PredicateLoopExprNode(
     val condition: Condition,
     val block: BlockExprNode
 ) : LoopExprNode() {
+    init {
+        resolvedType = UnitResolvedType()
+    }
+
     override val type: NodeType = NodeType.PredicateLoopExpr
 
     override fun accept(visitor: ASTVisitor) {
@@ -622,7 +632,7 @@ class WildcardPatternNode() : PatternNode() {
 
 data class ReferencePatternNode(
     val isMut: Boolean,
-    val pattern: PatternNode
+    val inner: PatternNode
 ) : PatternNode() {
     override val type: NodeType = NodeType.ReferencePattern
 

@@ -401,14 +401,12 @@ class Parser(private val tokens: List<Token>) {
             } else {
                 val expr = parseExpr(0)
                 if (match(TokenType.Semicolon)) {
-                    statements.add(ExprStmtNode(expr, true))
+                    statements.add(ExprStmtNode(expr))
                 } else {
-                    if (expr is ExprWithBlockNode) {
-                        statements.add(ExprStmtNode(expr, false))
+                    if (peek().type != TokenType.LeftBrace) {
+                        statements.add(ExprStmtNode(expr))
                     } else {
                         expression = expr
-                        if (peek().type != TokenType.RightBrace)
-                            error("expr must be the last in block")
                     }
                 }
             }
@@ -726,11 +724,8 @@ class Parser(private val tokens: List<Token>) {
     fun parseStructExprField(): StructExprField {
         if (peek().type != TokenType.IDENTIFIER) error("expected identifier")
         val name = consume()
-        val expr = if (match(TokenType.Colon)) {
-            parseExpr(0)
-        } else {
-            null
-        }
+        if (!match(TokenType.Colon)) error("expected colon")
+        val expr = parseExpr(0)
         return StructExprField(name, expr)
     }
 
@@ -1051,10 +1046,7 @@ class Parser(private val tokens: List<Token>) {
 
     fun parseFunctionParam(): FunctionParam {
         val paramPattern = parsePattern()
-        if (paramPattern is LiteralPatternNode ||
-            paramPattern is PathPatternNode ||
-            paramPattern is ReferencePatternNode
-        ) {
+        if (paramPattern is LiteralPatternNode || paramPattern is PathPatternNode) {
             error("improper pattern in function")
         }
         if (!match(TokenType.Colon)) error("expected :")

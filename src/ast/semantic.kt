@@ -1,7 +1,5 @@
 package ast
 
-import kotlin.collections.set
-
 sealed interface ResolvedType {
     val name: String
 }
@@ -41,19 +39,30 @@ class SelfResolvedType : ResolvedType {
     override val name: String = "Self"
 }
 
-// 未知类型
+class BottomResolvedType : ResolvedType {
+    // 将必定return的expr标记为bottom类型
+    override val name: String = "bottom"
+}
+
+class NeverResolvedType : ResolvedType {
+    // 将必定break的expr标记为bottom类型
+    override val name: String = "!"
+}
+
+// 未知类型，待推断
 class UnknownResolvedType : ResolvedType {
     override val name: String = "<unknown>"
 }
 
 class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
+    private var currentLoopNode: LoopExprNode? = null // 标记当前循环块，用于break检查
+    private var currentFnType: ResolvedType? = null
     private var currentImpl: Pair<ResolvedType, TraitSymbol?>? = null
     private var currentTrait: String? = null
     private val implRegistry = ImplRegistry()
     private val errors = mutableListOf<String>()
 
     // tool functions
-
     private fun reportError(msg: String) {
         errors.add(msg)
         println("Semantic Error: $msg")
@@ -103,6 +112,15 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
             }
 
             is UnitTypeNode -> UnitResolvedType()
+        }
+    }
+
+    fun isNumeric(resolvedType: ResolvedType): Boolean {
+        return when (resolvedType) {
+            PrimitiveResolvedType("i32"),
+            PrimitiveResolvedType("u32") -> true
+
+            else -> false
         }
     }
 
@@ -278,9 +296,14 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
             reportError("function redeclaration: '$fnName'")
             return
         }
+
         // 处理参数
         val parameters = mutableListOf<FunctionParameter>()
         var isMethod = false
+
+        val paramCheck = mutableSetOf<String>()
+
+        if (node.body != null) scopeStack.enterScope() // 进入函数作用域方便注册参数
 
         if (node.selfParam != null) {
             isMethod = true
@@ -298,6 +321,12 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
                     node.selfParam.isRef
                 )
             )
+            // 注册参数
+            if (node.body != null) {
+                scopeStack.define(
+                    VariableSymbol("self", selfType, node.selfParam.isMut)
+                )
+            }
         }
 
         if (isMethod && !isAssociated) {
@@ -309,15 +338,26 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
             val paramType = resolveType(param.type)
             when (val pattern = param.paramPattern) {
                 is IdentifierPatternNode -> {
-                    parameters.add(
-                        FunctionParameter(
-                            pattern.name.value,
-                            paramType,
-                            false,
-                            pattern.isMut,
-                            pattern.isRef
+                    val name = pattern.name.value
+                    if (paramCheck.add(name)) {
+                        parameters.add(
+                            FunctionParameter(
+                                name,
+                                paramType,
+                                isSelf = false,
+                                pattern.isMut,
+                                pattern.isRef
+                            )
                         )
-                    )
+                    } else {
+                        error("duplicate parameter name: '$name'")
+                    }
+                    // 注册参数
+                    if (node.body != null) {
+                        scopeStack.define(
+                            VariableSymbol(name, paramType, pattern.isMut)
+                        )
+                    }
                 }
 
                 is WildcardPatternNode -> {
@@ -330,6 +370,70 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
                             isRef = false
                         )
                     )
+                    // 无需注册
+                }
+
+                is ReferencePatternNode -> {
+                    var name = "&"
+                    var inner = pattern.inner
+                    var type = if (paramType is ReferenceResolvedType) {
+                        paramType.inner
+                    } else {
+                        error("mismatch type in function: '$fnName'")
+                    }
+
+                    while (inner is ReferencePatternNode) {
+                        name += "&"
+                        inner = inner.inner
+                        type = if (type is ReferenceResolvedType) {
+                            paramType.inner
+                        } else {
+                            error("mismatch type in function: '$fnName'")
+                        }
+                    }
+
+                    when (inner) {
+                        is IdentifierPatternNode -> {
+                            name += inner.name.value
+                            if (paramCheck.add(name)) {
+                                parameters.add(
+                                    FunctionParameter(
+                                        name,
+                                        paramType,
+                                        isSelf = false,
+                                        inner.isMut,
+                                        isRef = false
+                                    )
+                                )
+                            } else {
+                                error("duplicate parameter name: '$name'")
+                            }
+                            // 注册参数
+                            if (node.body != null) {
+                                scopeStack.define(
+                                    VariableSymbol(name, type, inner.isMut)
+                                )
+                            }
+                        }
+
+                        is WildcardPatternNode -> {
+                            name += "_"
+                            parameters.add(
+                                FunctionParameter(
+                                    name,
+                                    paramType,
+                                    isSelf = false,
+                                    isMut = false,
+                                    isRef = false
+                                )
+                            )
+                        }
+
+                        else -> {
+                            reportError("unexpected pattern in function: '$fnName'")
+                            return
+                        }
+                    }
                 }
 
                 else -> {
@@ -374,6 +478,25 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
 
             else -> scopeStack.define(symbol)
         }
+
+        if (node.body != null) {
+            val previousFn = currentFnType // 暂存FnType
+            currentFnType = returnType
+            val previousLoop = currentLoopNode // 暂存LoopNode
+            currentLoopNode = null
+            visitBlockExpr(node.body, createScope = false) // 这里已经创建作用域了
+
+            // 还原作用域外环境
+            currentLoopNode = previousLoop
+            currentFnType = previousFn
+
+            // 检查返回类型
+            if (node.body.resolvedType !is BottomResolvedType && node.body.resolvedType != returnType) {
+                reportError("return type mismatch in function: '$fnName'")
+                return
+            }
+            scopeStack.exitScope()
+        }
     }
 
     override fun visitImplItem(node: ImplItemNode) {
@@ -397,4 +520,227 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
         }
         currentImpl = null
     }
+
+    override fun visitEmptyStmt(node: EmptyStmtNode) {
+        // nothing to do
+    }
+
+    override fun visitItemStmt(node: ItemStmtNode) {
+        node.item.accept(this)
+    }
+
+    override fun visitLetStmt(node: LetStmtNode) {
+        TODO("Not yet implemented")
+    }
+
+    override fun visitExprStmt(node: ExprStmtNode) {
+        node.expr.accept(this)
+    }
+
+    override fun visitBlockExpr(node: BlockExprNode, createScope: Boolean) {
+        if (createScope) scopeStack.enterScope()
+
+        for (stmt in node.statements) {
+            stmt.accept(this)
+            if (stmt is ExprStmtNode) {
+                if (stmt.expr.resolvedType is BottomResolvedType) {
+                    node.resolvedType = BottomResolvedType()
+                }
+            }
+        }
+
+        if (node.tailExpr != null) {
+            node.tailExpr.accept(this)
+            if (node.resolvedType is UnknownResolvedType) {
+                node.resolvedType = node.tailExpr.resolvedType
+            }
+        } else {
+            if (node.resolvedType is UnknownResolvedType) {
+                node.resolvedType = UnitResolvedType()
+            }
+        }
+
+        if (createScope) scopeStack.exitScope()
+    }
+
+    override fun visitReturnExpr(node: ReturnExprNode) {
+        node.resolvedType = BottomResolvedType()
+        if (currentFnType != null) {
+            val returnType: ResolvedType = if (node.value != null) {
+                node.value.accept(this)
+                node.value.resolvedType
+            } else {
+                UnitResolvedType()
+            }
+            // 检查与函数返回类型是否匹配
+            if (returnType != currentFnType) {
+                reportError("returned type mismatch: '$returnType'")
+                return
+            }
+        } else {
+            error("return must be in a function block")
+        }
+    }
+
+    override fun visitInfiniteLoopExpr(node: InfiniteLoopExprNode) {
+        val previousLoop = currentLoopNode
+        currentLoopNode = node
+        // 进入循环
+        node.block.accept(this)
+        currentLoopNode = previousLoop
+    }
+
+    override fun visitPredicateLoopExpr(node: PredicateLoopExprNode) {
+        TODO("Not yet implemented")
+    }
+
+    override fun visitBreakExpr(node: BreakExprNode) {
+        node.resolvedType = NeverResolvedType()
+        if (currentLoopNode != null) {
+            val breakType: ResolvedType = if (node.value != null) {
+                node.value.accept(this)
+                node.value.resolvedType
+            } else {
+                UnitResolvedType() // 单独的break
+            }
+
+            // 检查与函数返回类型是否匹配
+            if (breakType !is NeverResolvedType) {
+                if (currentLoopNode!!.resolvedType is BottomResolvedType) {
+                    currentLoopNode!!.resolvedType = breakType
+                } else if (breakType !is BottomResolvedType) {
+                    // break bottom不用改
+                    reportError("loop type mismatch: '$breakType'")
+                    return
+                }
+            }
+        } else {
+            error("break must be in 'loop' or 'while'")
+        }
+    }
+
+    override fun visitContinueExpr(node: ContinueExprNode) {
+        // nothing to do
+    }
+
+    override fun visitBorrowExpr(node: BorrowExprNode) {
+        node.expr.accept(this)
+        node.resolvedType = ReferenceResolvedType(
+            inner = node.expr.resolvedType,
+            mutable = node.isMut
+        )
+    }
+
+    override fun visitDerefExpr(node: DerefExprNode) {
+        node.expr.accept(this)
+        val type = node.expr.resolvedType
+        if (type is ReferenceResolvedType) {
+            node.resolvedType = type.inner
+        } else {
+            reportError("Type '$type' cannot be dereferenced")
+            return
+        }
+    }
+
+    override fun visitNegationExpr(node: NegationExprNode) {
+        node.expr.accept(this)
+        val type = node.expr.resolvedType
+        when (node.operator.type) {
+            TokenType.SubNegate -> {
+                if (isNumeric(type)) {
+                    node.resolvedType = type
+                } else {
+                    reportError("Negation operator '${node.operator}' requires numeric operands")
+                }
+            }
+
+            TokenType.Not -> {
+                if (isNumeric(type) ||
+                    type == PrimitiveResolvedType("bool")
+                ) {
+                    node.resolvedType = type
+                } else {
+                    reportError("Negation operator '${node.operator}' requires numeric or bool operands")
+                }
+            }
+
+            else -> {
+                reportError("Unsupported negation operator '${node.operator}'")
+                return
+            }
+        }
+    }
+
+    override fun visitBinaryExpr(node: BinaryExprNode) {
+        node.left.accept(this)
+        node.right.accept(this)
+        // 解析出左右类型
+        val leftType = node.left.resolvedType
+        val rightType = node.right.resolvedType
+
+        when (node.operator.type) {
+            TokenType.Add, TokenType.SubNegate, TokenType.Mul, TokenType.Div, TokenType.Mod -> {
+                if (isNumeric(leftType) &&
+                    isNumeric(rightType) &&
+                    leftType == rightType
+                ) {
+                    node.resolvedType = leftType
+                } else {
+                    reportError("Arithmetic operator '${node.operator}' requires numeric operands")
+                    return
+                }
+            }
+
+            TokenType.BitAnd, TokenType.BitOr, TokenType.BitXor -> {
+                if ((isNumeric(leftType) || leftType == PrimitiveResolvedType("bool")) &&
+                    (isNumeric(rightType) || rightType == PrimitiveResolvedType("bool")) &&
+                    leftType == rightType
+                ) {
+                    node.resolvedType = leftType
+                } else {
+                    reportError("Arithmetic operator '${node.operator}' requires numeric or bool operands")
+                    return
+                }
+            }
+
+            TokenType.Shl, TokenType.Shr -> {
+                if (isNumeric(leftType) && isNumeric(rightType)) {
+                    node.resolvedType = leftType
+                } else {
+                    reportError("Arithmetic operator '${node.operator}' requires numeric operands")
+                    return
+                }
+            }
+
+            else -> {
+                reportError("Unsupported binary operator '${node.operator}'")
+                return
+            }
+        }
+    }
+
+    override fun visitComparisonExpr(node: ComparisonExprNode) {
+        node.left.accept(this)
+        node.right.accept(this)
+        // 解析出左右类型
+        val leftType = node.left.resolvedType
+        val rightType = node.right.resolvedType
+
+        when (node.operator.type) {
+            TokenType.Eq, TokenType.Neq, TokenType.Gt, TokenType.Lt, TokenType.Ge, TokenType.Le -> {
+                if (leftType == rightType) {
+                    node.resolvedType = leftType
+                } else {
+                    reportError("Comparison operator '${node.operator}' requires same type operands")
+                    return
+                }
+            }
+
+            else -> {
+                reportError("Unsupported binary operator '${node.operator}'")
+                return
+            }
+        }
+    }
 }
+
