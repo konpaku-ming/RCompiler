@@ -300,12 +300,13 @@ class Parser(private val tokens: List<Token>) {
     }
 
     fun parsePathExpr(): PathExprNode {
-        val path = mutableListOf<PathSegment>()
-        path.add(parsePathSegment())
-        while (match(TokenType.DoubleColon)) {
-            path.add(parsePathSegment())
+        val first = parsePathSegment()
+        val second = if (match(TokenType.DoubleColon)) {
+            parsePathSegment()
+        } else {
+            null
         }
-        return PathExprNode(path)
+        return PathExprNode(first, second)
     }
 
 

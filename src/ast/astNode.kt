@@ -172,7 +172,7 @@ data class ExprStmtNode(
 sealed class TypeNode : ASTNode()
 
 data class PathSegment(
-    val identSegment: Token,
+    val segment: Token,
 )
 
 data class TypePathNode(
@@ -296,7 +296,8 @@ data class RawCStringLiteralExprNode(
 }
 
 data class PathExprNode(
-    val path: List<PathSegment>,
+    val first: PathSegment,
+    val second: PathSegment?
 ) : ExprWithoutBlockNode() {
     override val type: NodeType = NodeType.PathExpr
 
@@ -422,7 +423,7 @@ data class CompoundAssignExprNode(
 }
 
 data class GroupedExprNode(
-    val expr: ExprNode
+    val inner: ExprNode
 ) : ExprWithoutBlockNode() {
     override val type: NodeType = NodeType.GroupedExpr
 

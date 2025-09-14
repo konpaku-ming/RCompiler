@@ -71,6 +71,7 @@ data class EnumSymbol(
 
 data class TraitSymbol(
     override val name: String,
+    val functions: MutableMap<String, FunctionSymbol> = mutableMapOf(),
     val methods: MutableMap<String, FunctionSymbol> = mutableMapOf(),
     val constants: MutableMap<String, ConstantSymbol> = mutableMapOf()
 ) : Symbol() {
@@ -81,6 +82,7 @@ data class TraitSymbol(
 data class Impl(
     val implType: ResolvedType,
     val trait: TraitSymbol?,
+    val functions: MutableMap<String, FunctionSymbol> = mutableMapOf(),
     val methods: MutableMap<String, FunctionSymbol> = mutableMapOf(),
     val constants: MutableMap<String, ConstantSymbol> = mutableMapOf()
 )
