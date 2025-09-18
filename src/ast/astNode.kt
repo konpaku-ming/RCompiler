@@ -14,7 +14,7 @@ enum class NodeType {
     StructExpr, CallExpr, MethodCallExpr, FieldExpr,
     InfiniteLoopExpr, PredicateLoopExpr, BreakExpr, ContinueExpr, IfExpr,
     ReturnExpr, UnderscoreExpr,
-    LiteralPattern, IdentifierPattern, WildcardPattern, ReferencePattern, PathPattern,
+    IdentifierPattern, WildcardPattern, ReferencePattern,
 }
 
 sealed class ASTNode {
@@ -215,9 +215,14 @@ class UnitTypeNode() : TypeNode() {
     }
 }
 
+enum class ExprType {
+    MutPlace, Place, Value, Unknown
+}
+
 // Expr
 sealed class ExprNode : ASTNode() {
     var resolvedType: ResolvedType = UnknownResolvedType() // expr的类型
+    var exprType: ExprType = ExprType.Unknown // 左右值
 }
 
 sealed class ExprWithoutBlockNode : ExprNode()
@@ -435,7 +440,7 @@ data class GroupedExprNode(
 sealed class ArrayExprNode : ExprWithoutBlockNode()
 
 data class ArrayListExprNode(
-    val element: List<ExprNode>
+    val elements: List<ExprNode>
 ) : ArrayExprNode() {
     override val type: NodeType = NodeType.ArrayList
 
@@ -600,17 +605,6 @@ class UnderscoreExprNode() : ExprWithoutBlockNode() {
 
 sealed class PatternNode : ASTNode()
 
-data class LiteralPatternNode(
-    val expr: LiteralExprNode,
-    val isNeg: Boolean
-) : PatternNode() {
-    override val type: NodeType = NodeType.LiteralPattern
-
-    override fun accept(visitor: ASTVisitor) {
-        visitor.visitLiteralPattern(this)
-    }
-}
-
 data class IdentifierPatternNode(
     val name: Token,
     val isRef: Boolean,
@@ -639,15 +633,5 @@ data class ReferencePatternNode(
 
     override fun accept(visitor: ASTVisitor) {
         visitor.visitReferencePattern(this)
-    }
-}
-
-data class PathPatternNode(
-    val path: PathExprNode
-) : PatternNode() {
-    override val type: NodeType = NodeType.PathPattern
-
-    override fun accept(visitor: ASTVisitor) {
-        visitor.visitPathPattern(this)
     }
 }

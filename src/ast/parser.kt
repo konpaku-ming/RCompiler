@@ -774,31 +774,12 @@ class Parser(private val tokens: List<Token>) {
             TokenType.Underscore -> parseWildcardPattern()
             TokenType.And -> parseReferencePattern()
             TokenType.BitAnd -> parseReferencePattern()
-            TokenType.SubNegate -> parseLiteralPattern()
-            TokenType.INTEGER_LITERAL -> parseLiteralPattern()
-            TokenType.CHAR_LITERAL -> parseLiteralPattern()
-            TokenType.STRING_LITERAL -> parseLiteralPattern()
-            TokenType.FALSE -> parseLiteralPattern()
-            TokenType.TRUE -> parseLiteralPattern()
             TokenType.REF -> parseIdentifierPattern()
             TokenType.MUT -> parseIdentifierPattern()
-            TokenType.SELF -> parsePathPattern()
-            TokenType.SELF_CAP -> parsePathPattern()
-            TokenType.IDENTIFIER -> {
-                when (ahead(1).type) {
-                    TokenType.DoubleColon -> parsePathPattern()
-                    else -> parseIdentifierPattern()
-                }
-            }
+            TokenType.IDENTIFIER -> parseIdentifierPattern()
 
             else -> error("unexpected token in pattern")
         }
-    }
-
-    fun parseLiteralPattern(): LiteralPatternNode {
-        val isNeg = match(TokenType.SubNegate)
-        val expr = parseLiteralExpr(consume())
-        return LiteralPatternNode(expr, isNeg)
     }
 
     fun parseIdentifierPattern(): IdentifierPatternNode {
@@ -824,11 +805,6 @@ class Parser(private val tokens: List<Token>) {
         } else {
             ReferencePatternNode(false, ReferencePatternNode(isMut, pattern))
         }
-    }
-
-    fun parsePathPattern(): PathPatternNode {
-        val path = parsePathExpr()
-        return PathPatternNode(path)
     }
 
     fun parseCondition(): Condition {
@@ -1047,9 +1023,6 @@ class Parser(private val tokens: List<Token>) {
 
     fun parseFunctionParam(): FunctionParam {
         val paramPattern = parsePattern()
-        if (paramPattern is LiteralPatternNode || paramPattern is PathPatternNode) {
-            error("improper pattern in function")
-        }
         if (!match(TokenType.Colon)) error("expected :")
         val type = parseType()
         return FunctionParam(paramPattern, type)

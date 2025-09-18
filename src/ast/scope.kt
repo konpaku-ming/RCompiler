@@ -50,14 +50,9 @@ data class ConstantSymbol(
     override val kind = SymbolKind.ConstantSymbol
 }
 
-data class StructFieldSymbol(
-    val name: String,
-    val type: ResolvedType,
-)
-
 data class StructSymbol(
     override val name: String,
-    val fields: Map<String, StructFieldSymbol> // fieldName to field
+    val fields: Map<String, ResolvedType>, // fieldName to fieldType
 ) : Symbol() {
     override val kind = SymbolKind.StructSymbol
 }

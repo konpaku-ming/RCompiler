@@ -15,9 +15,9 @@ data class PrimitiveResolvedType(
 
 data class ReferenceResolvedType(
     val inner: ResolvedType,
-    val mutable: Boolean
+    val isMut: Boolean
 ) : ResolvedType {
-    override val name: String = if (mutable) {
+    override val name: String = if (isMut) {
         "&mut " + inner.name
     } else {
         "&" + inner.name
@@ -85,6 +85,8 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
                     "Self" -> SelfResolvedType()
                     "u32" -> PrimitiveResolvedType("u32")
                     "i32" -> PrimitiveResolvedType("i32")
+                    "usize" -> PrimitiveResolvedType("usize")
+                    "isize" -> PrimitiveResolvedType("isize")
                     "bool" -> PrimitiveResolvedType("bool")
                     "char" -> PrimitiveResolvedType("char")
                     "str" -> PrimitiveResolvedType("str")
@@ -118,7 +120,9 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
     fun isNumeric(resolvedType: ResolvedType): Boolean {
         return when (resolvedType) {
             PrimitiveResolvedType("i32"),
-            PrimitiveResolvedType("u32") -> true
+            PrimitiveResolvedType("u32"),
+            PrimitiveResolvedType("isize"),
+            PrimitiveResolvedType("usize") -> true
 
             else -> false
         }
@@ -251,10 +255,7 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
             is PathExprNode -> {
                 val symbol = resolvePathExpr(expr)
                 when (symbol) {
-                    is VariableSymbol -> {
-                        expr.second == null
-                    }
-
+                    is VariableSymbol -> expr.second == null // 排除Enum的影响
                     else -> false
                 }
             }
@@ -264,7 +265,7 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
     }
 
     fun isAssigneeExpr(expr: ExprNode): Boolean {
-        if (isPlaceExpr(expr)) return true
+        if (expr.exprType == ExprType.MutPlace) return true
         when (expr) {
             is UnderscoreExprNode -> {
                 return true
@@ -285,6 +286,36 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
         }
     }
 
+    fun bindPattern(pattern: PatternNode, expectedType: ResolvedType, isMut: Boolean) {
+        when (pattern) {
+            is IdentifierPatternNode -> {
+                val symbol = VariableSymbol(pattern.name.value, expectedType, isMut)
+                scopeStack.define(symbol)
+            }
+
+            is WildcardPatternNode -> {
+                // 不绑定变量
+            }
+
+            is ReferencePatternNode -> {
+                if (expectedType !is ReferenceResolvedType) {
+                    error("Expected reference type for reference pattern")
+                }
+
+                if (pattern.isMut && !expectedType.isMut) {
+                    error("Cannot match &mut pattern against immutable reference")
+                }
+
+                if (!pattern.isMut && expectedType.isMut) {
+                    reportError("Cannot match & pattern against mutable reference")
+                    return
+                }
+
+                bindPattern(pattern.inner, expectedType.inner, isMut)
+            }
+        }
+    }
+
 
     // ASTNode visitor
     override fun visitCrate(node: CrateNode) {
@@ -301,7 +332,7 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
             return
         }
         // struct fields
-        val fields = mutableMapOf<String, StructFieldSymbol>()
+        val fields = mutableMapOf<String, ResolvedType>()
         if (node.fields != null) {
             for (field in node.fields) {
                 val fieldName = field.name.value
@@ -309,7 +340,7 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
                     reportError("Duplicate field '$fieldName' in struct '$structName'")
                 } else {
                     val fieldType = resolveType(field.type)
-                    fields[fieldName] = StructFieldSymbol(fieldName, fieldType)
+                    fields[fieldName] = fieldType
                 }
             }
         }
@@ -600,11 +631,6 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
                         }
                     }
                 }
-
-                else -> {
-                    reportError("unexpected pattern in function: '$fnName'")
-                    return
-                }
             }
         }
 
@@ -705,6 +731,7 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
     }
 
     override fun visitBlockExpr(node: BlockExprNode, createScope: Boolean) {
+        node.exprType = ExprType.Value
         if (createScope) scopeStack.enterScope()
 
         for (stmt in node.statements) {
@@ -732,6 +759,7 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
 
     override fun visitReturnExpr(node: ReturnExprNode) {
         node.resolvedType = BottomResolvedType()
+        node.exprType = ExprType.Value
         if (currentFnType != null) {
             val returnType: ResolvedType = if (node.value != null) {
                 node.value.accept(this)
@@ -750,6 +778,7 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
     }
 
     override fun visitInfiniteLoopExpr(node: InfiniteLoopExprNode) {
+        node.exprType = ExprType.Value
         val previousLoop = currentLoopNode
         currentLoopNode = node
         // 进入循环
@@ -763,6 +792,7 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
     }
 
     override fun visitPredicateLoopExpr(node: PredicateLoopExprNode) {
+        node.exprType = ExprType.Value
         node.condition.expr.accept(this)
         if (node.condition.expr.resolvedType == PrimitiveResolvedType("bool")) {
             // condition类型正确
@@ -778,13 +808,13 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
             }
             currentLoopNode = previousLoop
         } else {
-            reportError("condition must be boolean")
-            return
+            error("condition must be boolean")
         }
     }
 
     override fun visitBreakExpr(node: BreakExprNode) {
         node.resolvedType = NeverResolvedType()
+        node.exprType = ExprType.Value
         if (currentLoopNode != null) {
             val breakType: ResolvedType = if (node.value != null) {
                 node.value.accept(this)
@@ -812,29 +842,32 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
     }
 
     override fun visitContinueExpr(node: ContinueExprNode) {
-        // nothing to do
+        node.resolvedType = UnitResolvedType()
+        node.exprType = ExprType.Value
     }
 
     override fun visitBorrowExpr(node: BorrowExprNode) {
+        node.exprType = ExprType.Value
         node.expr.accept(this)
         node.resolvedType = ReferenceResolvedType(
             inner = node.expr.resolvedType,
-            mutable = node.isMut
+            isMut = node.isMut
         )
     }
 
     override fun visitDerefExpr(node: DerefExprNode) {
+        node.exprType = ExprType.Place
         node.expr.accept(this)
         val type = node.expr.resolvedType
         if (type is ReferenceResolvedType) {
             node.resolvedType = type.inner
         } else {
-            reportError("Type '$type' cannot be dereferenced")
-            return
+            error("Type '$type' cannot be dereferenced")
         }
     }
 
     override fun visitNegationExpr(node: NegationExprNode) {
+        node.exprType = ExprType.Value
         node.expr.accept(this)
         val type = node.expr.resolvedType
         when (node.operator.type) {
@@ -864,6 +897,7 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
     }
 
     override fun visitBinaryExpr(node: BinaryExprNode) {
+        node.exprType = ExprType.Value
         node.left.accept(this)
         node.right.accept(this)
         // 解析出左右类型
@@ -912,6 +946,7 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
     }
 
     override fun visitComparisonExpr(node: ComparisonExprNode) {
+        node.exprType = ExprType.Value
         node.left.accept(this)
         node.right.accept(this)
         // 解析出左右类型
@@ -936,6 +971,7 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
     }
 
     override fun visitLazyBooleanExpr(node: LazyBooleanExprNode) {
+        node.exprType = ExprType.Value
         node.left.accept(this)
         node.right.accept(this)
         // 解析出左右类型
@@ -962,6 +998,7 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
     }
 
     override fun visitTypeCastExpr(node: TypeCastExprNode) {
+        node.exprType = ExprType.Value
         node.expr.accept(this)
         val currentType = node.expr.resolvedType
         val targetType = resolveType(node.targetType)
@@ -984,6 +1021,7 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
     }
 
     override fun visitAssignExpr(node: AssignExprNode) {
+        node.exprType = ExprType.Value
         node.left.accept(this)
         node.right.accept(this)
         // 解析出左右类型
@@ -998,6 +1036,7 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
     }
 
     override fun visitCompoundAssignExpr(node: CompoundAssignExprNode) {
+        node.exprType = ExprType.Value
         node.left.accept(this)
         node.right.accept(this)
         // 解析出左右类型
@@ -1053,17 +1092,123 @@ class SemanticVisitor(private val scopeStack: ScopeStack) : ASTVisitor {
     override fun visitGroupedExpr(node: GroupedExprNode) {
         node.inner.accept(this)
         node.resolvedType = node.inner.resolvedType
+        node.exprType = node.inner.exprType
+    }
+
+    override fun visitArrayListExpr(node: ArrayListExprNode) {
+        node.exprType = ExprType.Value
+        for (element in node.elements) {
+            element.accept(this)
+        }
+        if (node.elements.firstOrNull() == null) {
+            reportError("Empty array literal is not allowed")
+            return
+        }
+        val elementType = node.elements.first().resolvedType
+        for (element in node.elements) {
+            if (element.resolvedType != elementType &&
+                element.resolvedType != BottomResolvedType()
+            ) {
+                error("Array elements must have the same type")
+            }
+        }
+
+        node.resolvedType = ArrayResolvedType(
+            elementType = elementType,
+            length = node.elements.size
+        )
+    }
+
+    override fun visitArrayLengthExpr(node: ArrayLengthExprNode) {
+        node.exprType = ExprType.Value
+        node.element.accept(this)
+        node.length.accept(this)
+
+        if (node.length.resolvedType != PrimitiveResolvedType("usize")) {
+            if (node.length is IntLiteralExprNode) {
+                node.length.resolvedType = PrimitiveResolvedType("usize")
+            } else error("Array length must be usize")
+        }
+        val lengthValue = evalConstExpr(node.length)
+        if (lengthValue < 0) {
+            error("Array length must be a non-negative constant integer")
+        }
+
+        node.resolvedType = ArrayResolvedType(
+            elementType = node.element.resolvedType,
+            length = lengthValue
+        )
+    }
+
+    override fun visitIndexExpr(node: IndexExprNode) {
+        node.base.accept(this)
+        node.index.accept(this)
+
+        if (node.index.resolvedType != PrimitiveResolvedType("usize")) {
+            if (node.index is IntLiteralExprNode) {
+                node.index.resolvedType = PrimitiveResolvedType("usize")
+            } else error("Array length must be usize")
+        }
+
+        val elementType = when (val baseType = node.base.resolvedType) {
+            is ArrayResolvedType -> baseType.elementType
+            else -> {
+                error("Cannot index into type $baseType")
+            }
+        }
+
+        node.exprType = when (node.base.exprType) {
+            ExprType.MutPlace -> ExprType.MutPlace
+            ExprType.Place -> ExprType.Place
+            ExprType.Value -> ExprType.MutPlace
+            ExprType.Unknown -> error("index base expr cannot be resolved")
+        }
+        node.resolvedType = elementType
+    }
+
+    override fun visitStructExpr(node: StructExprNode) {
+        val typeSymbol = resolvePathExpr(node.path)
+        if (typeSymbol !is StructSymbol) {
+            error("Expected struct type, found ${typeSymbol.kind}")
+        }
+        if (node.fields.size != typeSymbol.fields.size) {
+            error("fields cannot match")
+        }
+
+        val seenFields = mutableSetOf<String>() // 记录用过的field
+
+        for (field in node.fields) {
+            field.value.accept(this)
+            val fieldName = field.name.value
+            val fieldType = field.value.resolvedType
+
+            if (typeSymbol.fields[fieldName] == null) {
+                error("Unknown field '$fieldName' in struct '${typeSymbol.name}'")
+            }
+            if (!seenFields.add(fieldName)) {
+                error("Duplicate field '$fieldName' in struct expression")
+            }
+            if (fieldType != typeSymbol.fields[fieldName]) {
+                error("Type mismatch for field '$fieldName'")
+            }
+        }
+
+        node.exprType = ExprType.Value
+        node.resolvedType = NamedResolvedType(typeSymbol.name, typeSymbol)
     }
 
     override fun visitIntLiteralExpr(node: IntLiteralExprNode) {
+        node.exprType = ExprType.Value
         node.resolvedType = PrimitiveResolvedType("i32")
     }
 
     override fun visitCharLiteralExpr(node: CharLiteralExprNode) {
+        node.exprType = ExprType.Value
         node.resolvedType = PrimitiveResolvedType("char")
     }
 
     override fun visitBooleanLiteralExpr(node: BooleanLiteralExprNode) {
+        node.exprType = ExprType.Value
         node.resolvedType = PrimitiveResolvedType("bool")
     }
 }

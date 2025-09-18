@@ -60,9 +60,7 @@ interface ASTVisitor {
     fun visitUnderscoreExpr(node: UnderscoreExprNode)
 
     // Pattern
-    fun visitLiteralPattern(node: LiteralPatternNode)
     fun visitIdentifierPattern(node: IdentifierPatternNode)
     fun visitWildcardPattern(node: WildcardPatternNode)
     fun visitReferencePattern(node: ReferencePatternNode)
-    fun visitPathPattern(node: PathPatternNode)
 }
